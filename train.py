@@ -16,18 +16,47 @@ from torch.utils.tensorboard import SummaryWriter
 from models import ResNet18, ResNet34, CNN
 from privacy import NoisySGD_mech
 import os
+import argparse
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 
-def setup_logging():
-    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s', filename='train_training.log', filemode='a')
+def setup_logging(log_file='train_training.log'):
+    """Setup logging with configurable log file location"""
+    logging.basicConfig(
+        level=logging.INFO, 
+        format='%(asctime)s - %(levelname)s - %(message)s', 
+        filename=log_file, 
+        filemode='a'
+    )
     logger = logging.getLogger()
     return logger
 
 def main():
-    logger = setup_logging()
-    with open('/home/abarczew/ab_technical/empirical_optimum/jax_lip/config.yaml', 'r') as file:
+    # Parse command line arguments
+    parser = argparse.ArgumentParser(description='Train neural networks with differential privacy')
+    parser.add_argument('--config', type=str, default='config.yaml', 
+                       help='Path to configuration file')
+    parser.add_argument('--output_dir', type=str, default=None,
+                       help='Output directory for models and logs')
+    parser.add_argument('--seed', type=int, default=None,
+                       help='Random seed (overrides config file)')
+    parser.add_argument('--dataset', type=str, default=None,
+                       help='Dataset name (overrides config file)')
+    parser.add_argument('--log_file', type=str, default=None,
+                       help='Log file path')
+    
+    args = parser.parse_args()
+    
+    # Load configuration
+    with open(args.config, 'r') as file:
         config = yaml.safe_load(file)
     
+    # Override config with command line arguments
+    if args.seed is not None:
+        config['random_seed'] = args.seed
+    if args.dataset is not None:
+        config['dataset'] = args.dataset
+    
+    # Extract configuration
     dataset_name = config['dataset']
     depth = config['depth']
     model_save_path = config.get('model_save_path', 'best_model.pkl')
@@ -37,10 +66,11 @@ def main():
     noise_std = config.get('noise_std', 0.0)
     delta = float(config.get('delta', 1e-5))
     max_epsilon = config.get('max_epsilon', 10.0)
+    random_seed = config.get('random_seed', 0)
     
     # New configuration parameters for gradient accumulation
-    effective_batch_size = config.get('effective_batch_size', batch_size)  # The logical batch size you want
-    accumulation_steps = max(1, effective_batch_size // batch_size)  # How many micro-batches to accumulate
+    effective_batch_size = config.get('effective_batch_size', batch_size)
+    accumulation_steps = max(1, effective_batch_size // batch_size)
 
     # Data augmentation configuration
     use_augmentation = config.get('use_augmentation', True)
@@ -52,14 +82,39 @@ def main():
     ema_config = config.get('ema', {}) if use_ema else None
     eval_with_ema = ema_config.get('eval_with_ema', False) if ema_config else False
     
+    # Setup output directory
+    if args.output_dir:
+        output_dir = args.output_dir
+        os.makedirs(output_dir, exist_ok=True)
+        log_file = os.path.join(output_dir, 'train_training.log')
+        if args.log_file:
+            log_file = args.log_file
+    else:
+        # Use original timestamp-based naming
+        run_timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        folder_name = f'train_{dataset_name}_{run_timestamp}'
+        if use_augmentation:
+            folder_name += '_aug'
+        if use_ema:
+            folder_name += '_ema'
+        output_dir = f'models_saved/{folder_name}'
+        os.makedirs(output_dir, exist_ok=True)
+        log_file = args.log_file or 'train_training.log'
+    
+    # Setup logging
+    logger = setup_logging(log_file)
+    
     logger.info(f'Starting train experiment with configuration: {config}')
+    logger.info(f'Random seed: {random_seed}')
+    logger.info(f'Output directory: {output_dir}')
     logger.info(f'Physical batch size: {batch_size}, Effective batch size: {effective_batch_size}, Accumulation steps: {accumulation_steps}')
     logger.info(f'Data augmentation enabled: {use_augmentation}, augmentation multiplicity: {k}')
     logger.info(f'EMA enabled: {use_ema}')
     if use_ema:
         logger.info(f'EMA configuration: {ema_config}')
     
-    rng = random.PRNGKey(0)
+    # Use configurable random seed
+    rng = random.PRNGKey(random_seed)
 
     devices = jax.devices()
     num_devices = len(devices)
@@ -94,41 +149,39 @@ def main():
     noise_scale = noise_std / effective_batch_size
     state = create_train_state(init_rng, input_shape, model, learning_rate, noise_scale, use_ema=use_ema)
     
-    # Load previous state if available
-    state = load_model(state, model_save_path)
+    # Load previous state if available (but only if using original path)
+    if not args.output_dir:
+        state = load_model(state, model_save_path)
 
-    run_timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    folder_name = f'train_{dataset_name}_{run_timestamp}'
-    if use_augmentation:
-        folder_name += '_aug'
-    if use_ema:
-        folder_name += '_ema'
-    logger.info(f'Run timestamp: {run_timestamp}')
-    # Create a directory for saving the model
-    os.makedirs(f'models_saved/{folder_name}', exist_ok=True)
-    
     # Save modified config with accumulation and EMA info
     config_to_save = config.copy()
     config_to_save['effective_batch_size'] = effective_batch_size
     config_to_save['accumulation_steps'] = accumulation_steps
     config_to_save['physical_batch_size'] = batch_size
+    config_to_save['output_dir'] = output_dir
     if use_augmentation:
         config_to_save['final_augmentation_params'] = augment_params
         config_to_save['final_augmentation_multiplicity'] = k
     if use_ema:
         config_to_save['final_ema_config'] = ema_config
 
-    # Copy config.yaml to the model directory
-    with open(f'models_saved/{folder_name}/config.yaml', 'w') as file:
+    # Save config to output directory
+    with open(os.path.join(output_dir, 'config.yaml'), 'w') as file:
         yaml.dump(config_to_save, file)
-    writer = SummaryWriter(log_dir=f'logs/{folder_name}')
+    
+    # Setup tensorboard logging
+    tensorboard_dir = output_dir.replace('models_saved', 'logs') if 'models_saved' in output_dir else f'logs/{os.path.basename(output_dir)}'
+    os.makedirs(os.path.dirname(tensorboard_dir), exist_ok=True)
+    writer = SummaryWriter(log_dir=tensorboard_dir)
 
     best_accuracy = 0.0
     best_ema_accuracy = 0.0
+    best_epsilon = 0.0
     start_time = time.time()
+    
     for epoch in range(num_epochs):
         epoch_start_time = time.time()
-        rng, epoch_rng = random.split(rng)  # Split the PRNG key for each epoch
+        rng, epoch_rng = random.split(rng)
         
         # Use the augmented training function with EMA support
         state, train_loss = train_epoch_with_augmentation(
@@ -173,7 +226,8 @@ def main():
         
         # Save the model if the test accuracy improves
         if primary_accuracy > best_accuracy:
-            state = save_model(state, f'models_saved/{folder_name}/best_model.pkl')
+            model_path = os.path.join(output_dir, 'best_model.pkl')
+            state = save_model(state, model_path)
             best_accuracy = primary_accuracy.copy()
             best_epsilon = epsilon.copy()
             model_type = "EMA" if (eval_with_ema and state.ema_params is not None) else "regular"
@@ -190,22 +244,24 @@ def main():
             logger.info(f'Epsilon exceeded maximum limit: {epsilon:.4f} > {max_epsilon:.4f}. Stopping training.')
             break
 
+    # Log final results
     logger.info(f'Final test accuracy: {test_accuracy:.4f}')
     logger.info(f'Final test loss: {test_loss:.4f}')
     if use_ema and state.ema_params is not None:
         logger.info(f'Final EMA test accuracy: {ema_test_accuracy:.4f}')
         logger.info(f'Final EMA test loss: {ema_test_loss:.4f}')
         logger.info(f'Best EMA accuracy achieved: {best_ema_accuracy:.4f}')
+    logger.info(f'Best accuracy achieved: {best_accuracy:.4f}')
     logger.info(f'Final epsilon: {epsilon:.4f}')
     
     total_runtime = time.time() - start_time
     logger.info(f'Total training time: {total_runtime:.2f}s')
 
     # Rename the saved model file to include the accuracy
-    best_model_path = f'models_saved/{folder_name}/best_model.pkl'
+    best_model_path = os.path.join(output_dir, 'best_model.pkl')
     if os.path.exists(best_model_path):
         model_suffix = "ema" if (eval_with_ema and state.ema_params is not None) else "reg"
-        new_model_path = f'models_saved/{folder_name}/best_model_{model_suffix}_{best_accuracy:.4f}_eps={best_epsilon:.2f}.pkl'
+        new_model_path = os.path.join(output_dir, f'best_model_{model_suffix}_{best_accuracy:.4f}_eps={best_epsilon:.2f}.pkl')
         os.rename(best_model_path, new_model_path)
         logger.info(f'Model saved as {new_model_path}')
     else:
@@ -213,6 +269,34 @@ def main():
 
     logger.info('Train experiment completed')
     writer.close()
+
+    # Save final metrics summary for easy parsing
+    final_metrics = {
+        'dataset': dataset_name,
+        'random_seed': random_seed,
+        'final_accuracy': float(test_accuracy),
+        'final_loss': float(test_loss),
+        'best_accuracy': float(best_accuracy),
+        'final_epsilon': float(epsilon),
+        'total_runtime': total_runtime,
+        'num_epochs_completed': epoch + 1,
+        'use_augmentation': use_augmentation,
+        'use_ema': use_ema,
+        'noise_std': noise_std,
+        'learning_rate': learning_rate,
+        'effective_batch_size': effective_batch_size
+    }
+    
+    if use_ema and state.ema_params is not None:
+        final_metrics.update({
+            'final_ema_accuracy': float(ema_test_accuracy),
+            'final_ema_loss': float(ema_test_loss),
+            'best_ema_accuracy': float(best_ema_accuracy)
+        })
+    
+    # Save metrics as YAML for easy parsing
+    with open(os.path.join(output_dir, 'final_metrics.yaml'), 'w') as f:
+        yaml.dump(final_metrics, f)
 
 if __name__ == '__main__':
     main()
