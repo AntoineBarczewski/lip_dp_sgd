@@ -58,7 +58,6 @@ def main():
     
     # Extract configuration
     dataset_name = config['dataset']
-    depth = config['depth']
     model_save_path = config.get('model_save_path', 'best_model.pkl')
     batch_size = config.get('batch_size', 32)
     learning_rate = config.get('learning_rate', 0.1)
