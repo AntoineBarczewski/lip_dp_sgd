@@ -14,7 +14,7 @@ import numpy as np
 from datetime import datetime
 from torch.utils.tensorboard import SummaryWriter
 from models import ResNet18, ResNet34, CNN
-from utils_dp import NoisySGD_mech
+from privacy import NoisySGD_mech
 import os
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 
