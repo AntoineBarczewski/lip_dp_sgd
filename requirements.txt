@@ -1,0 +1,29 @@
+# JAX ecosystem
+jax==0.6.0
+jaxlib==0.6.0
+flax==0.10.5
+optax==0.2.4
+
+# Machine learning datasets and tools
+tensorflow-datasets==4.9.8
+tensorflow==2.19.0
+
+# Logging and monitoring
+tensorboard==2.19.0
+torch==2.5.1  # Only for tensorboard
+
+# Data processing and analysis
+numpy==1.26.4
+pandas==2.2.3
+PyYAML==6.0.2
+
+# Plotting and visualization
+matplotlib==3.10.3
+seaborn==0.12.2
+
+# Privacy accounting
+autodp==0.2.3.1
+
+# System utilities
+tqdm==4.67.1
+argparse
