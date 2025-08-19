@@ -16,7 +16,6 @@ def create_configs():
     # MNIST configuration
     mnist_config = {
         'dataset': 'mnist',
-        'depth': 18,
         'model_save_path': 'best_model.pkl',
         'random_seed': 42,
         
@@ -29,41 +28,18 @@ def create_configs():
         'delta': 1e-5,
         'max_epsilon': 10.0,
         
-        'use_augmentation': True,
-        'augment_mult': 2,
+        'use_augmentation': False,
         
-        'use_ema': True,
-        'ema': {
-            'mu': 0.999,
-            'use_warmup': True,
-            'start_step': 0,
-            'eval_with_ema': True
-        },
-        
-        'augmentation': {
-            'random_crop': True,
-            'crop_size': [28, 28],
-            'crop_padding': 2,
-            'random_flip': True,
-            'flip_prob': 0.5,
-            'random_brightness': True,
-            'brightness_delta': 0.1,
-            'random_contrast': True,
-            'contrast_range': [0.9, 1.1],
-            'random_saturation': False,
-            'random_hue': False
-        }
+        'use_ema': False
     }
     
     # Fashion-MNIST configuration
     fashion_mnist_config = mnist_config.copy()
     fashion_mnist_config['dataset'] = 'fashion_mnist'
-    fashion_mnist_config['augment_mult'] = 3
     
     # CIFAR-10 configuration
     cifar10_config = {
         'dataset': 'cifar10',
-        'depth': 18,
         'model_save_path': 'best_model.pkl',
         'random_seed': 42,
         
