@@ -1,0 +1,65 @@
+# Example configuration for gradient accumulation
+dataset: cifar10  # or mnist, fashion_mnist, cifar10
+depth: 18
+model_save_path: best_model.pkl
+
+# Original batch size (what fits in memory)
+batch_size: 32
+
+# New parameter: effective batch size (what you want logically)
+effective_batch_size: 512  # This will use 4x accumulation (128/32 = 4)
+
+learning_rate: 0.001
+num_epochs: 120
+noise_std: 1.0
+delta: 1e-5
+max_epsilon: 10.0
+
+# Data augmentation configuration
+use_augmentation: true
+augment_mult: 4
+
+# Exponential Moving Average (EMA) configuration
+use_ema: true
+ema:
+  mu: 0.999  # EMA momentum coefficient (0.999 is a common choice)
+  use_warmup: true  # Whether to use warmup schedule for mu
+  start_step: 0  # Step to start EMA (0 means from the beginning)
+  eval_with_ema: true  # Whether to evaluate using EMA parameters
+
+# Custom augmentation parameters (optional - will override defaults)
+augmentation:
+  # Geometric augmentations
+  random_crop: true
+  crop_size: [32, 32]  # [height, width]
+  crop_padding: 4
+  random_flip: true
+  flip_prob: 0.5
+  
+  # Color augmentations (only for RGB datasets like CIFAR-10)
+  random_brightness: true
+  brightness_delta: 0.2  # Max change in brightness
+  random_contrast: true
+  contrast_range: [0.8, 1.2]  # [min_factor, max_factor]
+  random_saturation: true
+  saturation_range: [0.8, 1.2]
+  random_hue: true
+  hue_delta: 0.1
+
+# Alternative configuration for MNIST/Fashion-MNIST
+# augmentation:
+#   random_crop: true
+#   crop_size: [28, 28]
+#   crop_padding: 2
+#   random_flip: true
+#   flip_prob: 0.5
+#   random_brightness: true
+#   brightness_delta: 0.1
+#   random_contrast: true
+#   contrast_range: [0.9, 1.1]
+#   # Don't use saturation/hue for grayscale images
+#   random_saturation: false
+#   random_hue: false
+
+# To disable augmentation, set:
+# use_augmentation: false
