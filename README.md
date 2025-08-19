@@ -1,6 +1,6 @@
 # Differentially Private Deep Learning with Weight Clipping
 
-This repository contains the implementation for reproducing results on DP-SGD with weight clipping across MNIST, Fashion-MNIST, and CIFAR-10 datasets.
+This repository contains the implementation for reproducing results on DP-SGD with weight clipping ([link to paper](https://arxiv.org/abs/2310.18001)) across MNIST, Fashion-MNIST, and CIFAR-10 datasets.
 
 ## Quick Start (One Command)
 
