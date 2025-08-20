@@ -19,7 +19,7 @@ PyYAML==6.0.2
 
 # Plotting and visualization
 matplotlib==3.10.3
-seaborn==0.12.2
+seaborn==0.13.2
 
 # Privacy accounting
 autodp==0.2.3.1
