@@ -37,7 +37,6 @@ if [ ! -f "configs/mnist.yaml" ]; then
     # Create MNIST config
     cat > configs/mnist.yaml << EOF
 dataset: mnist
-depth: 18
 model_save_path: best_model.pkl
 random_seed: 42
 
@@ -50,34 +49,14 @@ noise_std: 1.0
 delta: 1e-5
 max_epsilon: 10.0
 
-use_augmentation: true
-augment_mult: 2
+use_augmentation: false
 
-use_ema: true
-ema:
-  mu: 0.999
-  use_warmup: true
-  start_step: 0
-  eval_with_ema: true
-
-augmentation:
-  random_crop: true
-  crop_size: [28, 28]
-  crop_padding: 2
-  random_flip: true
-  flip_prob: 0.5
-  random_brightness: true
-  brightness_delta: 0.1
-  random_contrast: true
-  contrast_range: [0.9, 1.1]
-  random_saturation: false
-  random_hue: false
+use_ema: false
 EOF
 
     # Create Fashion-MNIST config
     cat > configs/fashion_mnist.yaml << EOF
 dataset: fashion_mnist
-depth: 18
 model_save_path: best_model.pkl
 random_seed: 42
 
@@ -90,34 +69,14 @@ noise_std: 1.0
 delta: 1e-5
 max_epsilon: 10.0
 
-use_augmentation: true
-augment_mult: 3
+use_augmentation: false
 
-use_ema: true
-ema:
-  mu: 0.999
-  use_warmup: true
-  start_step: 0
-  eval_with_ema: true
-
-augmentation:
-  random_crop: true
-  crop_size: [28, 28]
-  crop_padding: 2
-  random_flip: true
-  flip_prob: 0.5
-  random_brightness: true
-  brightness_delta: 0.1
-  random_contrast: true
-  contrast_range: [0.9, 1.1]
-  random_saturation: false
-  random_hue: false
+use_ema: false
 EOF
 
     # Create CIFAR-10 config
     cat > configs/cifar10.yaml << EOF
 dataset: cifar10
-depth: 18
 model_save_path: best_model.pkl
 random_seed: 42
 

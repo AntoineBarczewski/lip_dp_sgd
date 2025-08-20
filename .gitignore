@@ -210,3 +210,4 @@ __marimo__/
 *.log
 logs/
 models_saved/
+results/

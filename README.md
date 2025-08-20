@@ -16,6 +16,8 @@ This will:
 - Generate plots with error bars and standard deviations
 - Create a comprehensive summary report
 
+Please refer to section [For Reviewers: Quick Verification](#-for-reviewers-quick-verification) to quickly set up and perform few sanity checks of the code.
+
 ## 📁 Repository Structure
 
 ```
@@ -296,5 +298,3 @@ To quickly verify our claims:
    ```bash
    bash scripts/run_all_experiments.sh
    ```
-
-The repository is designed to make reproduction as straightforward as possible while maintaining scientific rigor.
