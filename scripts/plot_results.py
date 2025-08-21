@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
-Script to collect results from multiple seed experiments and generate plots with standard deviations.
+Script to plot training progression: accuracy vs epsilon over epochs with confidence intervals.
+Parses train_training.log files to extract epoch-by-epoch data.
 """
 
 import os
@@ -12,28 +13,121 @@ import numpy as np
 from pathlib import Path
 import argparse
 import re
-from typing import Dict, List, Any
+import json
+from typing import Dict, List, Any, Tuple
 import logging
+from scipy import stats
 
 # Set style for publication-quality plots
 plt.style.use('seaborn-v0_8-whitegrid')
-sns.set_palette("husl")
 
 def setup_logging():
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
     return logging.getLogger(__name__)
 
-def collect_results(results_dir: str) -> pd.DataFrame:
-    """Collect results from multiple seed runs"""
+def load_sota_data(dataset_name: str, sota_dir: str = "data/sota") -> List[Dict]:
+    """Load state-of-the-art data points for comparison"""
+    sota_file = os.path.join(sota_dir, f"{dataset_name}.txt")
+    
     logger = setup_logging()
-    results = []
+    logger.info(f"Looking for SOTA file: {sota_file}")
+    
+    if not os.path.exists(sota_file):
+        logger.warning(f"SOTA file not found: {sota_file}")
+        # List available files in the directory for debugging
+        if os.path.exists(sota_dir):
+            available_files = os.listdir(sota_dir)
+            logger.info(f"Available files in {sota_dir}: {available_files}")
+        else:
+            logger.warning(f"SOTA directory does not exist: {sota_dir}")
+        return []
+    
+    sota_data = []
+    try:
+        with open(sota_file, 'r') as f:
+            for line_num, line in enumerate(f, 1):
+                line = line.strip()
+                if line:
+                    try:
+                        data = json.loads(line)
+                        sota_data.append(data)
+                        logger.debug(f"Loaded SOTA data line {line_num}: {data['legend']}")
+                    except json.JSONDecodeError as e:
+                        logger.error(f"JSON decode error on line {line_num} in {sota_file}: {e}")
+                        logger.error(f"Problematic line: {line}")
+        
+        logger.info(f"Successfully loaded {len(sota_data)} SOTA entries from {sota_file}")
+        
+    except Exception as e:
+        logger.error(f"Error reading SOTA file {sota_file}: {e}")
+    
+    return sota_data
+
+def parse_training_log(log_file: Path) -> pd.DataFrame:
+    """Parse training log to extract epoch-by-epoch metrics"""
+    
+    if not log_file.exists():
+        return pd.DataFrame()
+    
+    epochs_data = []
+    
+    with open(log_file, 'r') as f:
+        lines = f.readlines()
+    
+    for line in lines:
+        line = line.strip()
+        # Look for epoch training lines like:
+        # "Epoch 0, Train Loss: 2.3456, Test Loss: 2.1234, Test Accuracy: 0.1234, Epsilon: 1.2345, Runtime: 12.34s"
+        # or with EMA:
+        # "Epoch 0, Train Loss: 2.3456, Test Loss: 2.1234, Test Accuracy: 0.1234, EMA Test Loss: 2.0000, EMA Test Accuracy: 0.1300, Epsilon: 1.2345, Runtime: 12.34s"
+        
+        epoch_match = re.search(r'Epoch (\d+),', line)
+        if epoch_match:
+            epoch = int(epoch_match.group(1))
+            
+            # Extract metrics using regex
+            train_loss_match = re.search(r'Train Loss: ([\d.]+)', line)
+            test_loss_match = re.search(r'Test Loss: ([\d.]+)', line)
+            test_acc_match = re.search(r'Test Accuracy: ([\d.]+)', line)
+            epsilon_match = re.search(r'Epsilon: ([\d.]+)', line)
+            runtime_match = re.search(r'Runtime: ([\d.]+)s', line)
+            
+            # EMA metrics (optional)
+            ema_test_loss_match = re.search(r'EMA Test Loss: ([\d.]+)', line)
+            ema_test_acc_match = re.search(r'EMA Test Accuracy: ([\d.]+)', line)
+            
+            if all([train_loss_match, test_loss_match, test_acc_match, epsilon_match]):
+                epoch_data = {
+                    'epoch': epoch,
+                    'train_loss': float(train_loss_match.group(1)),
+                    'test_loss': float(test_loss_match.group(1)),
+                    'test_accuracy': float(test_acc_match.group(1)),
+                    'epsilon': float(epsilon_match.group(1)),
+                    'runtime': float(runtime_match.group(1)) if runtime_match else None
+                }
+                
+                # Add EMA metrics if available
+                if ema_test_loss_match and ema_test_acc_match:
+                    epoch_data.update({
+                        'ema_test_loss': float(ema_test_loss_match.group(1)),
+                        'ema_test_accuracy': float(ema_test_acc_match.group(1))
+                    })
+                
+                epochs_data.append(epoch_data)
+    
+    return pd.DataFrame(epochs_data)
+
+def collect_training_data(results_dir: str) -> Dict[str, List[pd.DataFrame]]:
+    """Collect training progression data from all seed runs"""
+    logger = setup_logging()
+    training_data = {}
     
     results_path = Path(results_dir)
     if not results_path.exists():
         logger.error(f"Results directory {results_dir} not found!")
-        return pd.DataFrame()
+        return {}
     
-    logger.info(f"Collecting results from {results_dir}")
+    logger.info(f"Collecting training data from {results_dir}")
     
     # Look for dataset directories
     for dataset_dir in results_path.iterdir():
@@ -43,425 +137,304 @@ def collect_results(results_dir: str) -> pd.DataFrame:
         dataset_name = dataset_dir.name
         logger.info(f"Processing dataset: {dataset_name}")
         
+        dataset_runs = []
+        
         # Look for seed directories
-        seed_count = 0
         for seed_dir in dataset_dir.iterdir():
             if not seed_dir.is_dir() or not seed_dir.name.startswith('seed_'):
                 continue
                 
             seed = seed_dir.name.split('_')[1]
-            seed_count += 1
+            log_file = seed_dir / 'train_training.log'
             
-            # Look for metrics file first (preferred)
-            metrics_file = seed_dir / 'final_metrics.yaml'
-            config_file = seed_dir / 'config.yaml'
-            
-            if metrics_file.exists():
-                # Load metrics directly
-                with open(metrics_file, 'r') as f:
-                    metrics = yaml.safe_load(f)
-                
-                # Load config for additional info
-                config = {}
-                if config_file.exists():
-                    with open(config_file, 'r') as f:
-                        config = yaml.safe_load(f)
-                
-                result = {
-                    'dataset': dataset_name,
-                    'seed': int(seed),
-                    'final_accuracy': metrics.get('final_accuracy', None),
-                    'final_epsilon': metrics.get('final_epsilon', None),
-                    'best_accuracy': metrics.get('best_accuracy', None),
-                    'final_loss': metrics.get('final_loss', None),
-                    'total_runtime': metrics.get('total_runtime', None),
-                    'num_epochs': metrics.get('num_epochs_completed', None),
-                    'noise_std': metrics.get('noise_std', 0.0),
-                    'learning_rate': metrics.get('learning_rate', 0.001),
-                    'effective_batch_size': metrics.get('effective_batch_size', 32),
-                    'use_augmentation': metrics.get('use_augmentation', False),
-                    'use_ema': metrics.get('use_ema', False),
-                    'source': 'metrics_file'
-                }
-                
-                # Add EMA metrics if available
-                if metrics.get('use_ema', False):
-                    result.update({
-                        'final_ema_accuracy': metrics.get('final_ema_accuracy', None),
-                        'best_ema_accuracy': metrics.get('best_ema_accuracy', None),
-                        'final_ema_loss': metrics.get('final_ema_loss', None)
-                    })
-                
-            elif config_file.exists():
-                # Fallback to parsing log file
-                log_file = seed_dir / 'train_training.log'
-                if log_file.exists():
-                    metrics = parse_log_file(log_file)
-                    
-                    # Load config
-                    with open(config_file, 'r') as f:
-                        config = yaml.safe_load(f)
-                    
-                    result = {
-                        'dataset': dataset_name,
-                        'seed': int(seed),
-                        'final_accuracy': metrics.get('final_accuracy', None),
-                        'final_epsilon': metrics.get('final_epsilon', None),
-                        'best_accuracy': metrics.get('best_accuracy', None),
-                        'final_loss': metrics.get('final_loss', None),
-                        'noise_std': config.get('noise_std', 0.0),
-                        'learning_rate': config.get('learning_rate', 0.001),
-                        'effective_batch_size': config.get('effective_batch_size', config.get('batch_size', 32)),
-                        'use_augmentation': config.get('use_augmentation', False),
-                        'use_ema': config.get('use_ema', False),
-                        'source': 'log_file'
-                    }
-                    
-                    # Add EMA metrics if available
-                    if config.get('use_ema', False):
-                        result.update({
-                            'final_ema_accuracy': metrics.get('final_ema_accuracy', None),
-                            'best_ema_accuracy': metrics.get('best_ema_accuracy', None)
-                        })
+            if log_file.exists():
+                training_df = parse_training_log(log_file)
+                if not training_df.empty:
+                    training_df['seed'] = int(seed)
+                    training_df['dataset'] = dataset_name
+                    dataset_runs.append(training_df)
+                    logger.debug(f"Parsed {len(training_df)} epochs for {dataset_name}/seed_{seed}")
                 else:
-                    logger.warning(f"No log file found for {dataset_name}/seed_{seed}")
-                    continue
+                    logger.warning(f"No training data found in {log_file}")
             else:
-                logger.warning(f"No config file found for {dataset_name}/seed_{seed}")
-                continue
-            
-            results.append(result)
+                logger.warning(f"No log file found: {log_file}")
         
-        logger.info(f"Found {seed_count} seed runs for {dataset_name}")
-    
-    df = pd.DataFrame(results)
-    logger.info(f"Collected {len(df)} total experiment runs across {df['dataset'].nunique() if not df.empty else 0} datasets")
-    return df
-
-def parse_log_file(log_file: Path) -> Dict[str, Any]:
-    """Extract metrics from log file"""
-    metrics = {}
-    
-    with open(log_file, 'r') as f:
-        lines = f.readlines()
-    
-    # Find final metrics and best accuracy
-    for line in reversed(lines):
-        line = line.strip()
-        if 'Final test accuracy:' in line:
-            try:
-                metrics['final_accuracy'] = float(line.split(':')[1].strip())
-            except (ValueError, IndexError):
-                pass
-        elif 'Final epsilon:' in line:
-            try:
-                metrics['final_epsilon'] = float(line.split(':')[1].strip())
-            except (ValueError, IndexError):
-                pass
-        elif 'Final test loss:' in line:
-            try:
-                metrics['final_loss'] = float(line.split(':')[1].strip())
-            except (ValueError, IndexError):
-                pass
-        elif 'Best accuracy achieved:' in line:
-            try:
-                metrics['best_accuracy'] = float(line.split(':')[1].strip())
-            except (ValueError, IndexError):
-                pass
-        elif 'Final EMA test accuracy:' in line:
-            try:
-                metrics['final_ema_accuracy'] = float(line.split(':')[1].strip())
-            except (ValueError, IndexError):
-                pass
-        elif 'Best EMA accuracy achieved:' in line:
-            try:
-                metrics['best_ema_accuracy'] = float(line.split(':')[1].strip())
-            except (ValueError, IndexError):
-                pass
-    
-    return metrics
-
-def plot_accuracy_comparison(df: pd.DataFrame, save_path: str = None, use_ema: bool = False):
-    """Plot accuracy comparison across datasets with error bars"""
-    accuracy_col = 'best_ema_accuracy' if use_ema else 'best_accuracy'
-    
-    # Filter out None values
-    df_clean = df.dropna(subset=[accuracy_col])
-    
-    if df_clean.empty:
-        print(f"No data available for {accuracy_col}")
-        return
-    
-    plt.figure(figsize=(12, 8))
-    
-    # Calculate mean and std for each dataset
-    summary = df_clean.groupby('dataset')[accuracy_col].agg(['mean', 'std', 'count']).reset_index()
-    summary = summary.sort_values('mean', ascending=False)
-    
-    # Create bar plot with error bars
-    bars = plt.bar(range(len(summary)), summary['mean'], 
-                   yerr=summary['std'], capsize=5, alpha=0.7, 
-                   color=sns.color_palette("husl", len(summary)))
-    
-    # Add individual points as scatter plot
-    for i, dataset in enumerate(summary['dataset']):
-        dataset_data = df_clean[df_clean['dataset'] == dataset][accuracy_col]
-        x_pos = [i] * len(dataset_data)
-        plt.scatter(x_pos, dataset_data, alpha=0.6, color='red', s=40, zorder=3)
-    
-    plt.ylabel('Best Test Accuracy', fontsize=12)
-    plt.xlabel('Dataset', fontsize=12)
-    title = f'Model Performance Across Datasets {"(EMA)" if use_ema else ""}'
-    plt.title(title, fontsize=14, fontweight='bold')
-    plt.xticks(range(len(summary)), summary['dataset'], rotation=45)
-    plt.grid(axis='y', alpha=0.3)
-    
-    # Add text annotations with mean ± std
-    for i, row in summary.iterrows():
-        plt.text(i, row['mean'] + row['std'] + 0.01, 
-                f"{row['mean']:.3f} ± {row['std']:.3f}\n(n={row['count']})",
-                ha='center', va='bottom', fontsize=10, fontweight='bold')
-    
-    plt.tight_layout()
-    if save_path:
-        suffix = "_ema" if use_ema else ""
-        full_path = save_path.replace('.png', f'{suffix}.png')
-        plt.savefig(full_path, dpi=300, bbox_inches='tight')
-        print(f"Saved plot to {full_path}")
-    plt.show()
-
-def plot_privacy_accuracy_tradeoff(df: pd.DataFrame, save_path: str = None):
-    """Plot privacy-accuracy tradeoff"""
-    # Filter out None values
-    df_clean = df.dropna(subset=['best_accuracy', 'final_epsilon'])
-    
-    if df_clean.empty:
-        print("No data available for privacy-accuracy tradeoff")
-        return
-    
-    datasets = df_clean['dataset'].unique()
-    
-    if len(datasets) == 1:
-        # Single subplot for one dataset
-        fig, ax = plt.subplots(1, 1, figsize=(8, 6))
-        axes = [ax]
-    else:
-        # Multiple subplots
-        ncols = min(3, len(datasets))
-        nrows = (len(datasets) + ncols - 1) // ncols
-        fig, axes = plt.subplots(nrows, ncols, figsize=(5*ncols, 5*nrows))
-        if len(datasets) == 1:
-            axes = [axes]
-        elif nrows == 1:
-            axes = axes.flatten()
+        if dataset_runs:
+            training_data[dataset_name] = dataset_runs
+            logger.info(f"Found {len(dataset_runs)} training runs for {dataset_name}")
         else:
-            axes = axes.flatten()
+            logger.warning(f"No training data found for {dataset_name}")
     
-    for i, dataset in enumerate(datasets):
-        dataset_df = df_clean[df_clean['dataset'] == dataset]
+    return training_data
+
+def calculate_confidence_band(grouped_data: pd.DataFrame, epsilon_col: str, accuracy_col: str, confidence: float = 0.95) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Calculate mean and confidence bands for accuracy vs epsilon"""
+    
+    # Group by epsilon values (or create bins if continuous)
+    epsilon_values = sorted(grouped_data[epsilon_col].unique())
+    
+    means = []
+    ci_lowers = []
+    ci_uppers = []
+    valid_epsilons = []
+    
+    for eps in epsilon_values:
+        eps_data = grouped_data[grouped_data[epsilon_col] == eps][accuracy_col]
         
-        if len(dataset_df) == 0:
+        if len(eps_data) > 0:
+            mean_acc = eps_data.mean()
+            
+            if len(eps_data) > 1:
+                # Calculate confidence interval
+                sem = stats.sem(eps_data)
+                t_val = stats.t.ppf((1 + confidence) / 2, len(eps_data) - 1)
+                margin_error = t_val * sem
+                ci_lower = mean_acc - margin_error
+                ci_upper = mean_acc + margin_error
+            else:
+                # Only one data point
+                ci_lower = mean_acc
+                ci_upper = mean_acc
+            
+            means.append(mean_acc)
+            ci_lowers.append(ci_lower)
+            ci_uppers.append(ci_upper)
+            valid_epsilons.append(eps)
+    
+    return np.array(valid_epsilons), np.array(means), np.array(ci_lowers), np.array(ci_uppers)
+
+def plot_training_progression(training_data: Dict[str, List[pd.DataFrame]], output_dir: str, confidence: float = 0.95, use_ema: bool = True, sota_dir: str = "data/sota"):
+    """Plot training progression for each dataset: accuracy vs epsilon with confidence intervals and SOTA comparisons"""
+    logger = setup_logging()
+    
+    accuracy_col = 'ema_test_accuracy' if use_ema else 'test_accuracy'
+    
+    # Define colors for SOTA papers
+    sota_colors = ['red', 'orange', 'green', 'purple', 'brown', 'pink', 'gray', 'olive']
+    sota_markers = ['s', '^', 'D', 'v', '<', '>', 'p', '*']
+    
+    for dataset_name, dataset_runs in training_data.items():
+        if not dataset_runs:
             continue
-            
-        ax = axes[i] if i < len(axes) else axes[-1]
         
-        # Group by noise_std and calculate mean/std
-        if 'noise_std' in dataset_df.columns:
-            privacy_summary = dataset_df.groupby('noise_std').agg({
-                'best_accuracy': ['mean', 'std', 'count'],
-                'final_epsilon': ['mean', 'std']
-            }).reset_index()
+        logger.info(f"Creating training progression plot for {dataset_name}")
+        
+        # Combine all runs for this dataset
+        all_data = pd.concat(dataset_runs, ignore_index=True)
+        
+        # Check if we have the required columns
+        if accuracy_col not in all_data.columns:
+            if use_ema:
+                logger.warning(f"No EMA data found for {dataset_name}, falling back to regular accuracy")
+                accuracy_col = 'test_accuracy'
+            if accuracy_col not in all_data.columns:
+                logger.error(f"No accuracy data found for {dataset_name}")
+                continue
+        
+        plt.figure(figsize=(12, 8))
+        
+        # Calculate and plot mean with confidence interval (our method)
+        epsilon_vals, mean_accs, ci_lowers, ci_uppers = calculate_confidence_band(
+            all_data, 'epsilon', accuracy_col, confidence
+        )
+        
+        if len(epsilon_vals) > 0:
+            # Convert to percentages for better comparison
+            mean_accs_pct = mean_accs * 100
+            ci_lowers_pct = ci_lowers * 100
+            ci_uppers_pct = ci_uppers * 100
             
-            privacy_summary.columns = ['noise_std', 'acc_mean', 'acc_std', 'acc_count', 'eps_mean', 'eps_std']
+            # Plot mean line (our method) - NO individual seed lines
+            plt.plot(epsilon_vals, mean_accs_pct, 'o-', linewidth=3, markersize=8, 
+                    color='darkblue', label=f'Our Method (n={len(dataset_runs)})', zorder=10)
             
-            # Plot with error bars
-            ax.errorbar(privacy_summary['eps_mean'], privacy_summary['acc_mean'],
-                       yerr=privacy_summary['acc_std'], xerr=privacy_summary['eps_std'],
-                       marker='o', capsize=5, capthick=2, linewidth=2, markersize=8)
+            # Plot confidence interval as shaded area
+            plt.fill_between(epsilon_vals, ci_lowers_pct, ci_uppers_pct, 
+                           alpha=0.8, color='lightgray', 
+                           label=f'{int(confidence*100)}% Confidence Interval', zorder=5)
+        
+        # Load and plot SOTA data
+        sota_data = load_sota_data(dataset_name, sota_dir)
+        
+        if sota_data:
+            logger.info(f"Found SOTA data for {dataset_name}: {len(sota_data)} papers")
             
-            # Add point labels with noise std
-            for _, row in privacy_summary.iterrows():
-                ax.annotate(f'σ={row["noise_std"]:.1f}\n(n={row["acc_count"]})', 
-                           (row['eps_mean'], row['acc_mean']),
-                           xytext=(5, 5), textcoords='offset points', fontsize=8)
+            for i, paper_data in enumerate(sota_data):
+                epsilons = paper_data['coordinate'][0]
+                accuracies = paper_data['coordinate'][1]
+                legend = paper_data['legend']
+                
+                color = sota_colors[i % len(sota_colors)]
+                marker = sota_markers[i % len(sota_markers)]
+                
+                plt.scatter(epsilons, accuracies, 
+                          color=color, marker=marker, s=100, alpha=0.8,
+                          label=legend, zorder=15, edgecolors='black', linewidth=1)
+                
+                # Connect points if multiple points for same paper
+                if len(epsilons) > 1:
+                    plt.plot(epsilons, accuracies, 
+                           color=color, linestyle='--', alpha=0.6, linewidth=2)
         else:
-            # Simple scatter plot if no noise_std grouping
-            ax.scatter(dataset_df['final_epsilon'], dataset_df['best_accuracy'], 
-                      alpha=0.7, s=50)
+            logger.warning(f"No SOTA data found for {dataset_name} in {sota_dir}")
+            logger.info(f"Looking for file: {os.path.join(sota_dir, f'{dataset_name}.txt')}")
         
-        ax.set_xlabel('Privacy Loss (ε)', fontsize=12)
-        ax.set_ylabel('Best Test Accuracy', fontsize=12)
-        ax.set_title(f'{dataset.upper()}', fontsize=12, fontweight='bold')
-        ax.grid(alpha=0.3)
-    
-    # Hide extra subplots
-    for j in range(len(datasets), len(axes)):
-        axes[j].set_visible(False)
-    
-    plt.suptitle('Privacy-Accuracy Tradeoff Across Datasets', fontsize=14, fontweight='bold')
-    plt.tight_layout()
-    if save_path:
-        plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        print(f"Saved plot to {save_path}")
-    plt.show()
-
-def plot_training_comparison(df: pd.DataFrame, save_path: str = None):
-    """Plot comparison of different training configurations"""
-    if df.empty:
-        print("No data available for training comparison")
-        return
-    
-    # Create a configuration label
-    df = df.copy()
-    df['config'] = df.apply(lambda row: f"Aug: {row.get('use_augmentation', False)}, EMA: {row.get('use_ema', False)}", axis=1)
-    
-    fig, axes = plt.subplots(1, 2, figsize=(15, 6))
-    
-    # Plot 1: Accuracy by dataset and configuration
-    df_clean = df.dropna(subset=['best_accuracy'])
-    if not df_clean.empty:
-        summary = df_clean.groupby(['dataset', 'config'])['best_accuracy'].agg(['mean', 'std', 'count']).reset_index()
-        
-        datasets = summary['dataset'].unique()
-        configs = summary['config'].unique()
-        
-        x = np.arange(len(datasets))
-        width = 0.35
-        
-        for i, config in enumerate(configs):
-            config_data = summary[summary['config'] == config]
-            means = [config_data[config_data['dataset'] == d]['mean'].iloc[0] if len(config_data[config_data['dataset'] == d]) > 0 else 0 for d in datasets]
-            stds = [config_data[config_data['dataset'] == d]['std'].iloc[0] if len(config_data[config_data['dataset'] == d]) > 0 else 0 for d in datasets]
+        # Add statistics text box
+        # if len(epsilon_vals) > 0:
+        #     final_mean_acc = mean_accs_pct[-1] if len(mean_accs_pct) > 0 else 0
+        #     final_epsilon = epsilon_vals[-1] if len(epsilon_vals) > 0 else 0
+        #     max_acc = np.max(mean_accs_pct) if len(mean_accs_pct) > 0 else 0
             
-            axes[0].bar(x + i*width, means, width, yerr=stds, label=config, alpha=0.8, capsize=5)
+        #     stats_text = f'Our Results:\nFinal: {final_mean_acc:.1f}% @ ε={final_epsilon:.1f}\nMax: {max_acc:.1f}%\nRuns: {len(dataset_runs)}'
+        #     plt.text(0.02, 0.98, stats_text, transform=plt.gca().transAxes, 
+        #             fontsize=11, verticalalignment='top',
+        #             bbox=dict(boxstyle='round', facecolor='lightblue', alpha=0.8))
         
-        axes[0].set_ylabel('Best Test Accuracy')
-        axes[0].set_xlabel('Dataset')
-        axes[0].set_title('Accuracy by Configuration')
-        axes[0].set_xticks(x + width/2)
-        axes[0].set_xticklabels(datasets, rotation=45)
-        axes[0].legend()
-        axes[0].grid(axis='y', alpha=0.3)
-    
-    # Plot 2: Runtime analysis
-    df_runtime = df.dropna(subset=['total_runtime'])
-    if not df_runtime.empty:
-        runtime_summary = df_runtime.groupby('dataset')['total_runtime'].agg(['mean', 'std']).reset_index()
+        # Formatting
+        plt.xlabel('Privacy Loss (ε)', fontsize=18, fontweight='bold')
+        plt.ylabel(f'Test Accuracy (%)', fontsize=18, fontweight='bold')
+        # plt.title(f'{dataset_name.upper()}: Privacy-Accuracy Tradeoff\n{"EMA " if use_ema else ""}Accuracy vs Privacy Loss with SOTA Comparison', 
+        #          fontsize=16, fontweight='bold', pad=20)
+        plt.grid(True, alpha=0.3)
         
-        bars = axes[1].bar(runtime_summary['dataset'], runtime_summary['mean'], 
-                          yerr=runtime_summary['std'], capsize=5, alpha=0.7)
-        axes[1].set_ylabel('Training Time (seconds)')
-        axes[1].set_xlabel('Dataset')
-        axes[1].set_title('Training Runtime by Dataset')
-        axes[1].tick_params(axis='x', rotation=45)
-        axes[1].grid(axis='y', alpha=0.3)
+        # Legend with better positioning
+        plt.legend(fontsize=17, loc='best', framealpha=0.9)
         
-        # Add text annotations
-        for i, (bar, row) in enumerate(zip(bars, runtime_summary.itertuples())):
-            height = bar.get_height()
-            axes[1].text(bar.get_x() + bar.get_width()/2., height + row.std,
-                        f'{row.mean/60:.1f}±{row.std/60:.1f}min',
-                        ha='center', va='bottom', fontsize=9)
-    
-    plt.tight_layout()
-    if save_path:
-        plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        print(f"Saved plot to {save_path}")
-    plt.show()
+        # Set reasonable axis limits
+        if len(all_data) > 0:
+            y_min = max(0, (all_data[accuracy_col].min() * 100) - 2)
+            y_max = min(100, (all_data[accuracy_col].max() * 100) + 2)
+            
+            # Adjust y_min and y_max to include SOTA data
+            if sota_data:
+                all_sota_accs = []
+                for paper_data in sota_data:
+                    all_sota_accs.extend(paper_data['coordinate'][1])
+                if all_sota_accs:
+                    y_min = min(y_min, min(all_sota_accs) - 2)
+                    y_max = max(y_max, max(all_sota_accs) + 2)
+            
+            plt.ylim(y_min, y_max)
+            
+            x_min = max(0, all_data['epsilon'].min() - 0.2)
+            x_max = all_data['epsilon'].max() + 0.5
+            
+            # Adjust x limits to include SOTA data
+            if sota_data:
+                all_sota_eps = []
+                for paper_data in sota_data:
+                    all_sota_eps.extend(paper_data['coordinate'][0])
+                if all_sota_eps:
+                    x_min = min(x_min, min(all_sota_eps) - 0.2)
+                    x_max = max(x_max, max(all_sota_eps) + 0.5)
+            
+            plt.xlim(x_min, x_max)
+        
+        # Add a subtle background
+        plt.gca().patch.set_facecolor('white')
+        plt.gca().patch.set_alpha(0.9)
+        
+        # Save plot
+        suffix = "_ema" if use_ema else ""
+        filename = f'{dataset_name}_training_progression{suffix}.png'
+        filepath = os.path.join(output_dir, filename)
+        plt.tight_layout()
+        plt.savefig(filepath, dpi=300, bbox_inches='tight', facecolor='white')
+        logger.info(f"Saved plot: {filepath}")
+        plt.show()
+        plt.close()
 
-def generate_summary_table(df: pd.DataFrame, save_path: str = None):
-    """Generate a summary table of results"""
-    if df.empty:
-        print("No data available for summary table")
-        return
-    
-    # Calculate summary statistics
+def generate_training_summary(training_data: Dict[str, List[pd.DataFrame]], save_path: str = None):
+    """Generate summary statistics for training progression"""
     summary_stats = []
     
-    for dataset in df['dataset'].unique():
-        dataset_df = df[df['dataset'] == dataset]
+    for dataset_name, dataset_runs in training_data.items():
+        if not dataset_runs:
+            continue
         
-        for metric in ['best_accuracy', 'final_epsilon']:
-            if metric in dataset_df.columns:
-                clean_data = dataset_df.dropna(subset=[metric])
-                if len(clean_data) > 0:
-                    stats = {
-                        'Dataset': dataset.upper(),
-                        'Metric': metric.replace('_', ' ').title(),
-                        'Mean': clean_data[metric].mean(),
-                        'Std': clean_data[metric].std(),
-                        'Min': clean_data[metric].min(),
-                        'Max': clean_data[metric].max(),
-                        'Count': len(clean_data)
-                    }
-                    summary_stats.append(stats)
+        all_data = pd.concat(dataset_runs, ignore_index=True)
+        
+        # Overall statistics
+        stats = {
+            'Dataset': dataset_name.upper(),
+            'Number of Runs': len(dataset_runs),
+            'Total Epochs': len(all_data),
+            'Avg Epochs per Run': len(all_data) / len(dataset_runs),
+            'Final Epsilon (Mean)': all_data.groupby('seed')['epsilon'].last().mean(),
+            'Final Epsilon (Std)': all_data.groupby('seed')['epsilon'].last().std(),
+            'Final Accuracy % (Mean)': all_data.groupby('seed')['test_accuracy'].last().mean() * 100,
+            'Final Accuracy % (Std)': all_data.groupby('seed')['test_accuracy'].last().std() * 100,
+            'Max Accuracy % (Mean)': all_data.groupby('seed')['test_accuracy'].max().mean() * 100,
+            'Max Accuracy % (Std)': all_data.groupby('seed')['test_accuracy'].max().std() * 100,
+        }
+        
+        # Add EMA stats if available
+        if 'ema_test_accuracy' in all_data.columns:
+            stats.update({
+                'Final EMA Accuracy % (Mean)': all_data.groupby('seed')['ema_test_accuracy'].last().mean() * 100,
+                'Final EMA Accuracy % (Std)': all_data.groupby('seed')['ema_test_accuracy'].last().std() * 100,
+                'Max EMA Accuracy % (Mean)': all_data.groupby('seed')['ema_test_accuracy'].max().mean() * 100,
+                'Max EMA Accuracy % (Std)': all_data.groupby('seed')['ema_test_accuracy'].max().std() * 100,
+            })
+        
+        summary_stats.append(stats)
     
     summary_df = pd.DataFrame(summary_stats)
     
     if not summary_df.empty:
         # Round numeric columns
-        numeric_cols = ['Mean', 'Std', 'Min', 'Max']
-        summary_df[numeric_cols] = summary_df[numeric_cols].round(4)
+        numeric_cols = [col for col in summary_df.columns if '(' in col and col != 'Dataset']
+        summary_df[numeric_cols] = summary_df[numeric_cols].round(2)
         
-        print("\n" + "="*80)
-        print("SUMMARY STATISTICS")
-        print("="*80)
+        print("\n" + "="*120)
+        print("TRAINING PROGRESSION SUMMARY")
+        print("="*120)
         print(summary_df.to_string(index=False))
         
         if save_path:
             summary_df.to_csv(save_path, index=False)
-            print(f"\nSummary table saved to {save_path}")
+            print(f"\nTraining summary saved to {save_path}")
 
 def main():
-    parser = argparse.ArgumentParser(description='Plot results from multiple seed experiments')
+    parser = argparse.ArgumentParser(description='Plot training progression: accuracy vs epsilon with confidence intervals and SOTA comparison')
     parser.add_argument('--results_dir', default='results/experiments',
                        help='Directory containing experiment results')
     parser.add_argument('--output_dir', default='results/plots',
                        help='Directory to save plots')
-    parser.add_argument('--format', choices=['png', 'pdf', 'svg'], default='png',
-                       help='Output format for plots')
+    parser.add_argument('--confidence', type=float, default=0.95,
+                       help='Confidence level for intervals (default: 0.95)')
+    parser.add_argument('--use_ema', action='store_true',
+                       help='Use EMA accuracy instead of regular accuracy')
+    parser.add_argument('--sota_dir', default='data/sota',
+                       help='Directory containing SOTA data files (default: data/sota)')
     
     args = parser.parse_args()
     
     # Create output directory
     os.makedirs(args.output_dir, exist_ok=True)
     
-    # Collect and analyze results
-    df = collect_results(args.results_dir)
+    # Collect training data
+    training_data = collect_training_data(args.results_dir)
     
-    if df.empty:
-        print("No results found!")
+    if not training_data:
+        print("No training data found!")
         return
     
-    print(f"\nFound {len(df)} experiment runs across {df['dataset'].nunique()} datasets")
-    print("Datasets:", list(df['dataset'].unique()))
-    print("Seeds per dataset:")
-    print(df.groupby('dataset')['seed'].count().to_string())
+    logger = setup_logging()
+    total_runs = sum(len(runs) for runs in training_data.values())
+    logger.info(f"Found training data from {total_runs} runs across {len(training_data)} datasets")
+    
+    for dataset, runs in training_data.items():
+        total_epochs = sum(len(run) for run in runs)
+        logger.info(f"  {dataset}: {len(runs)} runs, {total_epochs} total epochs")
     
     # Generate plots
-    file_ext = f".{args.format}"
+    plot_training_progression(training_data, args.output_dir, args.confidence, args.use_ema, args.sota_dir)
     
-    # Accuracy comparison plots
-    plot_accuracy_comparison(df, os.path.join(args.output_dir, f'accuracy_comparison{file_ext}'))
+    # Generate summary
+    generate_training_summary(training_data, os.path.join(args.output_dir, 'training_progression_summary.csv'))
     
-    # EMA accuracy comparison if EMA data is available
-    if 'best_ema_accuracy' in df.columns and df['best_ema_accuracy'].notna().any():
-        plot_accuracy_comparison(df, os.path.join(args.output_dir, f'accuracy_comparison_ema{file_ext}'), use_ema=True)
-    
-    # Privacy-accuracy tradeoff
-    plot_privacy_accuracy_tradeoff(df, os.path.join(args.output_dir, f'privacy_accuracy_tradeoff{file_ext}'))
-    
-    # Training comparison
-    plot_training_comparison(df, os.path.join(args.output_dir, f'training_comparison{file_ext}'))
-    
-    # Generate summary table
-    generate_summary_table(df, os.path.join(args.output_dir, 'results_summary.csv'))
-    
-    # Save raw data
-    df.to_csv(os.path.join(args.output_dir, 'all_results.csv'), index=False)
-    print(f"\nAll results saved to {os.path.join(args.output_dir, 'all_results.csv')}")
-    
-    print(f"\nAll plots and summaries saved to {args.output_dir}/")
+    print(f"\nTraining progression plots with SOTA comparison and {int(args.confidence*100)}% confidence intervals saved to {args.output_dir}/")
 
 if __name__ == "__main__":
     main()

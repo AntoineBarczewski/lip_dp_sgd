@@ -1,0 +1,4 @@
+{"coordinate": [[1.5, 2, 2.93], [96.5, 97.3, 98.1]], "legend": "Papernot et al (2021)"}
+{"coordinate": [[2], [94.2]], "legend": "Fu et al (2022)"}
+{"coordinate": [[0.2, 1, 5, 8], [90, 94, 95, 97]], "legend": "Abadi et al (2016)"}
+{"coordinate": [[0.25, 1, 2], [90.5, 95, 96.5]], "legend": "Bethune et al (2024)"}

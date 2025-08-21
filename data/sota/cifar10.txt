@@ -1,0 +1,4 @@
+{"coordinate": [[3, 4, 6, 8], [70.7, 73.5, 78.8, 81.4]], "legend": "De et al (2022)"}
+{"coordinate": [[2, 3], [67.2, 69.3]], "legend": "Tramer and Boneh (2021)"}
+{"coordinate": [[7.53], [66.2]], "legend": "Papernot et al (2021)"}
+{"coordinate": [[2, 3, 5, 8], [35.1, 36.5, 40, 41.5]], "legend": "Bethune et al (2024)"}

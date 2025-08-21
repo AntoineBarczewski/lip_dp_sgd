@@ -85,9 +85,9 @@ When you run the full experiment suite, you should expect results similar to:
 
 | Dataset | Best Accuracy (mean ± std) | Privacy Loss (ε) |
 |---------|----------------------------|-------------------|
-| MNIST | 0.995 ± 0.003 | ~5.5 |
-| Fashion-MNIST | 0.935 ± 0.005 | ~4.0 |
-| CIFAR-10 | 0.863 ± 0.008 | ~5.1 |
+| MNIST | 0.991 ± 0.0003 | ~4.1 |
+| Fashion-MNIST | 0.917 ± 0.0005 | ~4.1 |
+| CIFAR-10 | 0.861 ± 0.0014 | ~7.5 |
 
 *Note: Actual results may vary slightly due to hardware differences and random initialization.*
 
@@ -142,7 +142,7 @@ python scripts/plot_results.py \
 Each dataset has optimized hyperparameters in `configs/`:
 
 - **MNIST**: 50 epochs, batch size 64→256, no augmentation multiplicity
-- **Fashion-MNIST**: 50 epochs, batch size 64→256, no augmentation multiplicity 3  
+- **Fashion-MNIST**: 50 epochs, batch size 64→256, no augmentation multiplicity
 - **CIFAR-10**: 120 epochs, batch size 32→512, augmentation multiplicity 4
 
 ### Key Configuration Parameters

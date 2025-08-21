@@ -211,3 +211,5 @@ __marimo__/
 logs/
 models_saved/
 results/
+low_epsilon/
+quick_test/
